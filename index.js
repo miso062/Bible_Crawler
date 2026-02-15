@@ -132,25 +132,75 @@ async function getChapterData(link) {
 async function getBookDatas(bookName) {
   // BIBLE_BOOKS에서 책 정보 가져오기
   const bookData = BIBLE_BOOKS[bookName];
-  // 책의 카테고리 번호를 사용하여 크롤링 대상 URL 생성
-  const targetUrl = `/korsms/category/${bookData.categoryNumber}`;
+
+  // 모든 장 링크를 저장할 Set (중복 제거 및 순서 보장)
+  const allChapterLinks = new Set();
+  let page = 1;
+  let hasNextPage = true;
 
   // 책 이름 출력
   console.log(`========== ${bookName} 크롤링 시작 ==========`);
 
-  // 책 목록 페이지의 HTML 가져오기
-  const html = await fetchPage(targetUrl);
+  // 1. 모든 페이지를 순회하며 장 링크 수집
+  while (hasNextPage) {
+    // 페이지별 URL 생성 (1페이지는 기본 URL, 2페이지부터는 /page/n 추가)
+    const targetUrl = page === 1
+      ? `/korsms/category/${bookData.categoryNumber}`
+      : `/korsms/category/${bookData.categoryNumber}/page/${page}`;
 
-  // HTML에서 모든 장 링크 추출
-  const chapterLinks = getChapterLinks(html);
+    try {
+      // 해당 페이지의 HTML 가져오기
+      const html = await fetchPage(targetUrl);
+
+      // HTML에서 장 링크들 추출
+      const links = getChapterLinks(html);
+
+      // 링크가 없으면 더 이상 페이지가 없는 것으로 간주하고 종료
+      if (links.length === 0) {
+        hasNextPage = false;
+        break;
+      }
+
+      // 새로 발견된 링크가 있는지 확인
+      let newLinksCount = 0;
+      links.forEach(link => {
+        if (!allChapterLinks.has(link)) {
+          allChapterLinks.add(link);
+          newLinksCount++;
+        }
+      });
+
+      // 새로운 링크가 하나도 없다면 (모두 중복이라면) 종료
+      if (newLinksCount === 0) {
+        hasNextPage = false;
+        break;
+      }
+
+      console.log(`${page}페이지 링크 수집 완료 (${newLinksCount}개 추가, 누적 ${allChapterLinks.size}개)`);
+
+      // 다음 페이지로 진행
+      page++;
+      // 페이지 목록 조회 간 딜레이 (서버 부하 방지)
+      await delay(1000);
+
+    } catch (error) {
+      // 404 등 오류 발생 시 페이지 끝으로 간주
+      console.log(`${page}페이지 수집 중단 (마지막 페이지 도달 추정)`);
+      hasNextPage = false;
+    }
+  }
+
+  // Set을 배열로 변환
+  const chapterLinks = Array.from(allChapterLinks);
+  console.log(`총 ${chapterLinks.length}개의 장 링크를 확보했습니다. 본문 크롤링을 시작합니다.`);
 
   // 장 데이터를 저장할 배열 초기화
   const chapterDatas = [];
 
-  // 순차적으로 처리하여 서버 부하 방지 및 차단 방지
+  // 2. 수집된 모든 링크에 대해 본문 데이터 크롤링
   for (let i = 0; i < chapterLinks.length; i++) {
     try {
-      // 첫 번째 요청이 아닌 경우 1초 딜레이로 서버 부하 방지
+      // 순차적 요청 시 딜레이 (첫 번째 요청 제외)
       if (i > 0) {
         await delay(1000);
       }
@@ -163,7 +213,7 @@ async function getBookDatas(bookName) {
       console.log(`${i + 1}장 완료`);
     } catch (error) {
       // 에러 발생 시 에러 메시지 출력
-      console.log(`${i + 1}장 오류 발생`);
+      console.log(`${i + 1}장 오류 발생: ${error.message}`);
       // 에러 발생 시 2초 딜레이 후 다음 장으로 진행
       await delay(2000);
     }
